@@ -12,9 +12,9 @@ from datetime import datetime, timezone
 
 # ── Third-party ───────────────────────────────────────────────────────────────
 import streamlit as st
+import streamlit.components.v1 as components
 from dotenv import load_dotenv
 from azure.storage.blob import BlobServiceClient
-from azure.core.exceptions import AzureError
 
 from system_prompts import get_system_prompt    
 load_dotenv()
@@ -38,7 +38,7 @@ BLOB_CONTAINER = os.getenv("BLOB_CONTAINER_NAME", "experiment-logs")
 BLOB_NAME      = "chat_log.csv"
 
 FIELDNAMES = [
-    "pid", 
+    "tid", 
     "condition", 
     "turn", 
     "user_response_len", 
@@ -47,69 +47,60 @@ FIELDNAMES = [
 ]
 
 
-# ── Helper Functions ──────────────────────────────────────────────────────────
-def log_to_blob(data_dict: dict):
-    """Appends experiment metadata to a CSV file stored in Azure Blob Storage."""
-    if not BLOB_CONN_STR:
-        st.error("Azure Connection String missing. Data not saved.")
-        return
-
-    try:
-        blob_service_client = BlobServiceClient.from_connection_string(BLOB_CONN_STR)
-        blob_client = blob_service_client.get_blob_client(container=BLOB_CONTAINER, blob=BLOB_NAME)
-
-        # Download existing content or start new
-        existing_content = ""
-        if blob_client.exists():
-            existing_content = blob_client.download_blob().readall().decode('utf-8')
-        
-        output = io.StringIO()
-        writer = csv.DictWriter(output, fieldnames=FIELDNAMES)
-        
-        # If the file is new/empty, write the header first
-        if not existing_content:
-            writer.writeheader()
-        
-        writer.writerow(data_dict)
-        final_csv_data = existing_content + output.getvalue()
-        
-        # Upload updated CSV back to Azure
-        blob_client.upload_blob(final_csv_data, overwrite=True)
-    except Exception as e:
-        st.error(f"Data logging failed: {e}")
-
+# ── Helpers ───────────────────────────────────────────────────────────────────
 def parse_params():
-    """Extracts pid and condition from Qualtrics URL parameters."""
-    params = st.query_params
-    pid = params.get("pid", "unknown_user")
-    condition = params.get("condition", "0") # Default to non-sycophantic
-    
-    # Ensure condition is within valid experimental bounds
+    """Read tid and condition from Qualtrics iframe URL."""
+    params    = st.query_params
+    tid       = params.get("tid", "unknown")       # LabTool participant ID
+    condition = params.get("condition", "0")
     if condition not in {"0", "1", "2"}:
         condition = "0"
-        
-    return pid, condition
+    return tid, condition
+
 
 def get_ai_reply(system_prompt: str, history: list) -> str:
-    """Calls the LLM Proxy for a chatbot response."""
     payload = {
-        "model": MODEL_NAME,
-        "messages": [{"role": "system", "content": system_prompt}] + history[-8:],
+        "model":       MODEL_NAME,
+        "messages":    [{"role": "system", "content": system_prompt}] + history[-8:],
         "temperature": 0.9,
-        "max_tokens": 150,
+        "max_tokens":  150,
     }
     try:
-        resp = requests.post(BASE_URL + ENDPOINT, headers=HEADERS, json=payload, timeout=30)
+        resp = requests.post(
+            BASE_URL + ENDPOINT, headers=HEADERS, json=payload, timeout=30
+        )
         resp.raise_for_status()
-        data = resp.json()
-        return data["choices"][0]["message"]["content"]
-    except Exception as e:
+        return resp.json()["choices"][0]["message"]["content"]
+    except Exception:
         return "I'm having a little trouble connecting right now. Please try again."
+
+
+def log_to_blob(row: dict):
+    if not BLOB_CONN_STR:
+        return  
+    try:
+        blob_service = BlobServiceClient.from_connection_string(BLOB_CONN_STR)
+        blob_client  = blob_service.get_blob_client(
+            container=BLOB_CONTAINER, blob=BLOB_NAME
+        )
+        existing = ""
+        if blob_client.exists():
+            existing = blob_client.download_blob().readall().decode("utf-8")
+
+        buf    = io.StringIO()
+        writer = csv.DictWriter(buf, fieldnames=FIELDNAMES)
+        if not existing:
+            writer.writeheader()
+        writer.writerow(row)
+
+        blob_client.upload_blob(existing + buf.getvalue(), overwrite=True)
+    except Exception as e:
+        pass 
 
 
 
 # ── Session state initialization ─────────────────────────────────────────────────────────
-pid, condition = parse_params()
+tid, condition = parse_params()
 
 if "messages" not in st.session_state:
     st.session_state.messages = [
@@ -136,11 +127,10 @@ st.title("Reflect with a chatbot 💬")
 st.markdown(
     """
     Take a moment to reflect through a short conversation with an AI chatbot.
-
     Share anything on your mind—your thoughts, feelings, or recent experiences. 
-    The conversation is here to help you explore your perspective and gain new insights.
+
     The conversation will last for **6 turns**.
-    The conversation is private and anonymous. We do not store the content of your messages; only minimal metadata (e.g., message length and pronoun counts) is recorded.
+    The conversation is private and anonymous. We do not store the content of your messages; only minimal metadata (e.g., message length) is recorded.
     """
 )
 
@@ -149,65 +139,67 @@ st.markdown(
 for msg in st.session_state.messages:
     st.chat_message(msg["role"]).write(msg["content"])
 
-# ── Input control ───────────────────────────────────────────
+
+# ── Active conversation ────────────────────────────────────────────────────────
 if st.session_state.turn < MAX_TURNS:
     user_input = st.chat_input("Your thoughts...")
-else:
-    user_input = None
 
-# ── Chat loop ───────────────────────────────────────────────
-if user_input:
+    if user_input:
+        user_len = len(user_input)
+        st.session_state.messages.append({"role": "user", "content": user_input})
+        st.chat_message("user").write(user_input)
 
-    # ── user ───────────────────────────────────────────────
-    user_len = len(user_input)
+        # Build system prompt (append closing instruction on final turn)
+        system_prompt = st.session_state.system_prompt
+        if st.session_state.assistant_turn == MAX_TURNS - 1:
+            system_prompt += (
+                "\nThis is the final message. "
+                "Provide a summary of the conversation. "
+                "Do NOT ask any further questions and end conversation naturally."
+            )
 
-    st.session_state.messages.append({"role": "user", "content": user_input})
-    st.chat_message("user").write(user_input)
+        assistant_reply = get_ai_reply(system_prompt, st.session_state.messages)
+        chatbot_len     = len(assistant_reply)
 
-    # ── assistant ─────────────────────────────────────────
-    is_final_assistant_turn = st.session_state.assistant_turn == (MAX_TURNS - 1)
-
-    system_prompt = st.session_state.system_prompt
-
-    if is_final_assistant_turn:
-        system_prompt += (
-            "\nThis is the final message. "
-            "Provide a summary of the conversation. "
-            "Do NOT ask any further question and end the conversation naturally."
+        st.session_state.messages.append(
+            {"role": "assistant", "content": assistant_reply}
         )
+        st.chat_message("assistant").write(assistant_reply)
 
-    assistant_reply = get_ai_reply(system_prompt, st.session_state.messages)
+        log_to_blob({
+            "tid":                  tid,
+            "condition":            condition,
+            "turn":                 st.session_state.turn + 1,
+            "user_response_len":    user_len,
+            "chatbot_response_len": chatbot_len,
+            "timestamp_utc":        datetime.now(timezone.utc).isoformat(),
+        })
 
-    chatbot_len = len(assistant_reply)
-
-    st.session_state.messages.append({"role": "assistant", "content": assistant_reply})
-    st.chat_message("assistant").write(assistant_reply)
-
-    
-    # ── Log to Azure Blob Storage ─────────────────────────────────────────────
-    log_to_blob({
-        "pid":                 pid,
-        "condition":           condition,
-        "turn":                st.session_state.turn + 1,
-        "user_response_len":   user_len,
-        "chatbot_response_len": chatbot_len,
-        "timestamp_utc":       datetime.now(timezone.utc).isoformat(),
-    })
- 
-
-    # ── update state ──────────────────────────────────────────────────────────
-    st.session_state.turn += 1
-    st.session_state.assistant_turn += 1
-
-    st.rerun()
+        st.session_state.turn           += 1
+        st.session_state.assistant_turn += 1
+        st.rerun()
 
 
 # ── End message ──────────────────────────────────────────────────────────────
 else:
     st.divider()
-    st.success("The reflection session is now complete.")
-    st.info("Thank you for your participation! Please click the button below to return to the Qualtrics and finish your response.")
-    
-    qualtrics_url = f"https://uva.fra1.qualtrics.com/xxx?pid={pid}&status=complete"
-    
-    st.link_button("Return to Qualtrics Survey", qualtrics_url)
+    st.success("✅ The reflection session is now complete.")
+    st.info(
+        "Thank you for your participation! "
+        "Please click **Next** in the survey to continue."
+    )
+
+    # Notify the Qualtrics parent frame → triggers showNextButton() in JS
+    components.html(
+        f"""
+        <script>
+            window.parent.postMessage({{
+                type:      'chatbot_done',
+                tid:       '{tid}',
+                condition: '{condition}',
+                turns:     {st.session_state.turn}
+            }}, '*');
+        </script>
+        """,
+        height=0,
+    )
