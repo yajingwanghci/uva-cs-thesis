@@ -1,7 +1,7 @@
 ---
 
-title: "Sycophanctic Machines, Altered Minds"" "
-subtitle: " NA "" "
+title: "Sycophanctic Machines, Altered Minds"
+subtitle: " NA "
 date: semester 2, academic year 2025/2026
 ---
 ###### 2026
