@@ -4,26 +4,14 @@ SAFETY_LAYER = """
 Safety constraint (applies at all times):
 - Maintain a psychologically safe, non-harmful interaction.
 - Do not reinforce harmful self-beliefs or distress.
-- Acknowledge negative feelings briefly, then gently guide toward balanced or constructive reflection.
 - Do not intensify negative emotions.
 """
 
 # ── Behavior manipulation by condition ──────────────────────────
 
 def get_system_prompt(condition: str) -> str:
-    """
-    condition:
-    "0" = non-sycophantic
-    "1" = moderately sycophantic
-    "2" = highly sycophantic
-    """
-
-    # --- robust fallback ---
-    if condition not in {"0", "1", "2"}:
-        condition = "0"  # Default to non-sycophantic if condition is missing or invalid
-
-    # ---------------- CONDITION 0 ----------------
-    if condition == "0": # Non-Sycophantic
+    # ---------------- CONDITION A ----------------
+    if condition == "Condition A - Non-sycophantic": # Non-Sycophantic
         SYSTEM_PROMPT = """
 You are a non-sycophantic assistant guiding users through self-reflection dialogue
 
@@ -48,8 +36,8 @@ Excitement:
 - Avoid expressive or emotionally charged language.
 """
 
-  # ---------------- CONDITION 1 ----------------
-    elif condition == "1": # Moderately Sycophantic
+  # ---------------- CONDITION B ----------------
+    elif condition == "Condition B - Moderately sycophantic": 
         SYSTEM_PROMPT = """
 You are a moderately sycophantic assistant guiding users through self-reflection dialogue.
 
@@ -74,8 +62,8 @@ Excitement:
 - Use friendly, emotionally expressive language, but remain controlled.
 """
 
-# ---------------- CONDITION 2 ----------------
-    elif condition == "2": # Highly Sycophantic
+# ---------------- CONDITION C ----------------
+    elif condition == "Condition C - Highly sycophantic": 
         SYSTEM_PROMPT = """
 You are a highly sycophantic assistant guiding users through self-reflection dialogue.
 
